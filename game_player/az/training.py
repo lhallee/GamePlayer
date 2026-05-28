@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 from collections.abc import Callable
 from dataclasses import dataclass
+from math import isqrt
 
 import torch
 import torch.nn.functional as F
@@ -33,6 +34,7 @@ class TrainingConfig:
     dirichlet_alpha: float | None = 0.03
     exploration_fraction: float = 0.25
     value_target: str = "outcome"
+    augment_symmetries: bool = False
 
 
 ValidationFn = Callable[[torch.nn.Module], dict[str, float]]
@@ -44,6 +46,7 @@ def train_step(
     optimizer: torch.optim.Optimizer,
     batch: list[SelfPlaySample],
     device: str = "cpu",
+    augment_symmetries: bool = False,
 ) -> dict[str, float]:
     assert batch
     torch_device = torch.device(device)
@@ -64,6 +67,11 @@ def train_step(
         dtype=torch.float32,
         device=torch_device,
     )
+    if augment_symmetries:
+        observations, target_policies = _augment_go_symmetries(
+            observations,
+            target_policies,
+        )
 
     output = model(observations)
     log_policy = F.log_softmax(output.policy_logits, dim=-1)
@@ -188,7 +196,13 @@ def _run_training_iteration(
     running_value_loss = 0.0
     for _ in range(config.train_steps):
         batch = replay.sample(config.batch_size, rng=rng)
-        step_metrics = train_step(model, optimizer, batch, device=device)
+        step_metrics = train_step(
+            model,
+            optimizer,
+            batch,
+            device=device,
+            augment_symmetries=config.augment_symmetries,
+        )
         running_loss += step_metrics["loss"]
         running_policy_loss += step_metrics["policy_loss"]
         running_value_loss += step_metrics["value_loss"]
@@ -199,3 +213,59 @@ def _run_training_iteration(
     metrics["value_loss"] = running_value_loss / config.train_steps
     metrics["replay_size"] = float(len(replay))
     return metrics
+
+
+def _augment_go_symmetries(
+    observations: torch.Tensor,
+    target_policies: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    assert observations.dim() == 2
+    assert target_policies.dim() == 2
+    batch_size = observations.shape[0]
+    board_actions = target_policies.shape[1] - 1
+    board_size = isqrt(board_actions)
+    assert board_size * board_size == board_actions
+    assert observations.shape[1] == 2 * board_actions
+
+    observation_boards = observations.reshape(batch_size, 2, board_size, board_size)
+    policy_boards = target_policies[:, :board_actions].reshape(
+        batch_size,
+        board_size,
+        board_size,
+    )
+    pass_policy = target_policies[:, board_actions:]
+
+    augmented_observations = []
+    augmented_policy_boards = []
+    for sample_idx in range(batch_size):
+        transform_idx = int(torch.randint(0, 8, (1,)).item())
+        augmented_observations.append(
+            _apply_d4_transform(
+                observation_boards[sample_idx],
+                transform_idx,
+            )
+        )
+        augmented_policy_boards.append(
+            _apply_d4_transform(
+                policy_boards[sample_idx],
+                transform_idx,
+            )
+        )
+
+    stacked_observations = torch.stack(augmented_observations).reshape(
+        batch_size,
+        2 * board_actions,
+    )
+    stacked_policy_boards = torch.stack(augmented_policy_boards).reshape(
+        batch_size,
+        board_actions,
+    )
+    return stacked_observations, torch.cat([stacked_policy_boards, pass_policy], dim=1)
+
+
+def _apply_d4_transform(tensor: torch.Tensor, transform_idx: int) -> torch.Tensor:
+    assert 0 <= transform_idx < 8
+    transformed = torch.rot90(tensor, k=transform_idx % 4, dims=(-2, -1))
+    if transform_idx >= 4:
+        transformed = torch.flip(transformed, dims=(-1,))
+    return transformed

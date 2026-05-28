@@ -14,7 +14,8 @@ from game_player.az.evaluation import (
 )
 from game_player.az.mcts import Evaluator
 from game_player.az.training import TrainingConfig, run_training_iterations
-from game_player.hub import save_mlp_model
+from game_player.hub import save_policy_value_model
+from game_player.models.conv import ConvPolicyValueNet
 from game_player.models.mlp import MLPPolicyValueNet
 from game_player.reporting import write_training_report
 
@@ -32,6 +33,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=7.5,
     )
     parser.add_argument(
+        "--model-type",
+        choices=["mlp", "conv"],
+        default="mlp",
+    )
+    parser.add_argument(
         "--hidden-size",
         type=int,
         default=512,
@@ -40,6 +46,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--depth",
         type=int,
         default=3,
+    )
+    parser.add_argument(
+        "--channels",
+        type=int,
+        default=64,
+    )
+    parser.add_argument(
+        "--blocks",
+        type=int,
+        default=4,
     )
     parser.add_argument(
         "--iterations",
@@ -122,6 +138,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
     )
     parser.add_argument(
+        "--augment-symmetries",
+        action="store_true",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="cpu",
@@ -192,18 +212,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     torch.manual_seed(args.seed)
-    model = MLPPolicyValueNet(
-        board_size=args.board_size,
-        hidden_size=args.hidden_size,
-        depth=args.depth,
-        include_pass=True,
-    )
-    random_weight_baseline = MLPPolicyValueNet(
-        board_size=args.board_size,
-        hidden_size=args.hidden_size,
-        depth=args.depth,
-        include_pass=True,
-    )
+    model = build_model(args)
+    random_weight_baseline = build_model(args)
     config = TrainingConfig(
         board_size=args.board_size,
         komi=args.komi,
@@ -221,6 +231,7 @@ def main() -> None:
         dirichlet_alpha=args.dirichlet_alpha,
         exploration_fraction=args.exploration_fraction,
         value_target=args.value_target,
+        augment_symmetries=args.augment_symmetries,
     )
     metrics_by_iteration = run_training_cli(
         model=model,
@@ -238,8 +249,11 @@ def main() -> None:
         run_config={
             "board_size": args.board_size,
             "komi": args.komi,
+            "model_type": args.model_type,
             "hidden_size": args.hidden_size,
             "depth": args.depth,
+            "channels": args.channels,
+            "blocks": args.blocks,
             "iterations": args.iterations,
             "self_play_games": args.self_play_games,
             "mcts_simulations": args.mcts_simulations,
@@ -256,6 +270,7 @@ def main() -> None:
             "mcts_evaluator": args.mcts_evaluator,
             "rollout_games": args.rollout_games,
             "rollout_max_moves": args.rollout_max_moves,
+            "augment_symmetries": args.augment_symmetries,
             "device": args.device,
             "validation_games": args.validation_games,
             "validation_opponent": args.validation_opponent,
@@ -278,14 +293,32 @@ def main() -> None:
     )
     metrics = metrics_by_iteration[-1]
     if args.output_dir is not None:
-        save_mlp_model(model, args.output_dir)
+        save_policy_value_model(model, args.output_dir)
     print(json.dumps(metrics, indent=2, sort_keys=True))
 
 
+def build_model(args: argparse.Namespace) -> torch.nn.Module:
+    if args.model_type == "mlp":
+        return MLPPolicyValueNet(
+            board_size=args.board_size,
+            hidden_size=args.hidden_size,
+            depth=args.depth,
+            include_pass=True,
+        )
+    if args.model_type == "conv":
+        return ConvPolicyValueNet(
+            board_size=args.board_size,
+            channels=args.channels,
+            blocks=args.blocks,
+            include_pass=True,
+        )
+    raise ValueError(f"Unknown model type: {args.model_type}")
+
+
 def run_training_cli(
-    model: MLPPolicyValueNet,
+    model: torch.nn.Module,
     config: TrainingConfig,
-    baseline_model: MLPPolicyValueNet,
+    baseline_model: torch.nn.Module,
     validation_games: int,
     validation_opponent: str,
     validation_max_moves: int | None,
@@ -311,7 +344,7 @@ def run_training_cli(
     best_win_rate = -1.0
     metrics_history: list[dict[str, float]] = []
 
-    def validation_fn(candidate_model: MLPPolicyValueNet) -> dict[str, float]:
+    def validation_fn(candidate_model: torch.nn.Module) -> dict[str, float]:
         if validation_games == 0:
             return {}
         if validation_opponent == "random-agent":
@@ -343,7 +376,7 @@ def run_training_cli(
             win_rate = metrics["validation_candidate_win_rate"]
             if best_checkpoint_dir is not None and win_rate > best_win_rate:
                 best_win_rate = win_rate
-                save_mlp_model(model, best_checkpoint_dir)
+                save_policy_value_model(model, best_checkpoint_dir)
             if target_win_rate is not None and win_rate >= target_win_rate:
                 metrics["target_reached"] = 1.0
         if metrics_path is not None:
@@ -359,7 +392,7 @@ def run_training_cli(
                 title=run_name,
             )
         if checkpoint_dir is not None and iteration % save_every == 0:
-            save_mlp_model(
+            save_policy_value_model(
                 model,
                 checkpoint_dir / f"iteration-{iteration:04d}",
             )
@@ -384,7 +417,7 @@ def run_training_cli(
 
 
 def build_search_evaluator(
-    model: MLPPolicyValueNet,
+    model: torch.nn.Module,
     mcts_evaluator: str,
     rollout_games: int,
     rollout_max_moves: int | None,

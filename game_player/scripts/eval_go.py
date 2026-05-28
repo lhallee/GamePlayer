@@ -9,6 +9,7 @@ from game_player.az.evaluation import (
     evaluate_model_against_random_agent,
     evaluate_model_against_random_weights,
 )
+from game_player.models.conv import ConvPolicyValueNet
 from game_player.models.mlp import MLPPolicyValueNet
 
 
@@ -18,6 +19,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         type=str,
         required=True,
+    )
+    parser.add_argument(
+        "--model-type",
+        choices=["mlp", "conv"],
+        default="mlp",
     )
     parser.add_argument(
         "--opponent",
@@ -55,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     torch.manual_seed(args.seed)
-    model = MLPPolicyValueNet.from_pretrained(args.model)
+    model = load_model(args.model, args.model_type)
 
     if args.opponent == "random-agent":
         metrics = evaluate_model_against_random_agent(
@@ -68,12 +74,7 @@ def main() -> None:
             seed=args.seed,
         )
     elif args.opponent == "random-weights":
-        baseline = MLPPolicyValueNet(
-            board_size=model.board_size,
-            hidden_size=model.hidden_size,
-            depth=model.depth,
-            include_pass=model.include_pass,
-        )
+        baseline = build_random_weight_baseline(model, args.model_type)
         metrics = evaluate_model_against_random_weights(
             candidate_model=model,
             baseline_model=baseline,
@@ -87,6 +88,37 @@ def main() -> None:
         raise ValueError(f"Unknown opponent: {args.opponent}")
 
     print(json.dumps(metrics, indent=2, sort_keys=True))
+
+
+def load_model(path_or_repo_id: str, model_type: str) -> torch.nn.Module:
+    if model_type == "mlp":
+        return MLPPolicyValueNet.from_pretrained(path_or_repo_id)
+    if model_type == "conv":
+        return ConvPolicyValueNet.from_pretrained(path_or_repo_id)
+    raise ValueError(f"Unknown model type: {model_type}")
+
+
+def build_random_weight_baseline(
+    model: torch.nn.Module,
+    model_type: str,
+) -> torch.nn.Module:
+    if model_type == "mlp":
+        assert isinstance(model, MLPPolicyValueNet)
+        return MLPPolicyValueNet(
+            board_size=model.board_size,
+            hidden_size=model.hidden_size,
+            depth=model.depth,
+            include_pass=model.include_pass,
+        )
+    if model_type == "conv":
+        assert isinstance(model, ConvPolicyValueNet)
+        return ConvPolicyValueNet(
+            board_size=model.board_size,
+            channels=model.channels,
+            blocks=model.blocks,
+            include_pass=model.include_pass,
+        )
+    raise ValueError(f"Unknown model type: {model_type}")
 
 
 if __name__ == "__main__":
