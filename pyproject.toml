@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "game-player"
+version = "0.1.0"
+description = "Modular AlphaZero-style self-play agents for games."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "huggingface-hub>=0.23",
+    "streamlit>=1.33",
+    "torch>=2.2",
+    "transformers>=4.40",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+game-player-train-go = "game_player.scripts.train_go:main"
+
+[tool.setuptools.packages.find]
+include = ["game_player*"]
