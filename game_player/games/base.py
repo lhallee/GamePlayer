@@ -35,6 +35,9 @@ class GameState(Protocol):
     def area_scores(self) -> tuple[float, float]:
         raise NotImplementedError
 
+    def ownership(self) -> tuple[Player, ...]:
+        raise NotImplementedError
+
     def winner(self) -> Player:
         raise NotImplementedError
 

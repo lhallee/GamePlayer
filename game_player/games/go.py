@@ -257,6 +257,29 @@ class GoState:
 
         return black_score, white_score
 
+    def ownership(self) -> tuple[Player, ...]:
+        ownership = list(self.board)
+        visited: set[int] = set()
+
+        for point, color in enumerate(self.board):
+            if color != EMPTY or point in visited:
+                continue
+            region, border_colors = _collect_empty_region(
+                self.board,
+                point,
+                self.board_size,
+            )
+            visited.update(region)
+            owner = EMPTY
+            if WHITE not in border_colors and BLACK in border_colors:
+                owner = BLACK
+            elif BLACK not in border_colors and WHITE in border_colors:
+                owner = WHITE
+            for region_point in region:
+                ownership[region_point] = owner
+
+        return tuple(ownership)
+
     def winner(self) -> Player:
         black_score, white_score = self.area_scores()
         if black_score > white_score:

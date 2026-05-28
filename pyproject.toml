@@ -23,6 +23,7 @@ dev = [
 
 [project.scripts]
 game-player-eval-go = "game_player.scripts.eval_go:main"
+game-player-eval-tactical-go = "game_player.scripts.eval_tactical_go:main"
 game-player-train-go = "game_player.scripts.train_go:main"
 
 [tool.setuptools.packages.find]

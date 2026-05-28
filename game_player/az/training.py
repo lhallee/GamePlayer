@@ -35,6 +35,8 @@ class TrainingConfig:
     exploration_fraction: float = 0.25
     value_target: str = "outcome"
     augment_symmetries: bool = False
+    ownership_loss_weight: float = 0.0
+    validation_interval: int = 1
 
 
 ValidationFn = Callable[[torch.nn.Module], dict[str, float]]
@@ -47,8 +49,10 @@ def train_step(
     batch: list[SelfPlaySample],
     device: str = "cpu",
     augment_symmetries: bool = False,
+    ownership_loss_weight: float = 0.0,
 ) -> dict[str, float]:
     assert batch
+    assert ownership_loss_weight >= 0.0
     torch_device = torch.device(device)
     model.train()
 
@@ -68,16 +72,27 @@ def train_step(
         device=torch_device,
     )
     if augment_symmetries:
-        observations, target_policies = _augment_go_symmetries(
+        observations, target_policies, target_ownerships = _augment_go_symmetries(
             observations,
             target_policies,
+            _ownership_tensor(batch, torch_device, ownership_loss_weight),
         )
+    else:
+        target_ownerships = _ownership_tensor(batch, torch_device, ownership_loss_weight)
 
     output = model(observations)
     log_policy = F.log_softmax(output.policy_logits, dim=-1)
     policy_loss = -(target_policies * log_policy).sum(dim=-1).mean()
     value_loss = F.mse_loss(output.value, target_values)
-    loss = policy_loss + value_loss
+    ownership_loss = torch.tensor(0.0, device=torch_device)
+    if ownership_loss_weight > 0.0:
+        assert target_ownerships is not None
+        assert output.ownership is not None
+        ownership_loss = F.mse_loss(
+            output.ownership.flatten(start_dim=1),
+            target_ownerships,
+        )
+    loss = policy_loss + value_loss + ownership_loss_weight * ownership_loss
 
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
@@ -87,6 +102,7 @@ def train_step(
         "loss": float(loss.detach().cpu().item()),
         "policy_loss": float(policy_loss.detach().cpu().item()),
         "value_loss": float(value_loss.detach().cpu().item()),
+        "ownership_loss": float(ownership_loss.detach().cpu().item()),
     }
 
 
@@ -121,6 +137,8 @@ def run_training_iterations(
     assert config.temperature_drop_move >= 0
     assert 0.0 <= config.exploration_fraction <= 1.0
     assert config.value_target in ("outcome", "score")
+    assert config.ownership_loss_weight >= 0.0
+    assert config.validation_interval > 0
 
     rng = random.Random(config.seed)
     model.to(torch.device(device))
@@ -143,7 +161,11 @@ def run_training_iterations(
             rng=rng,
         )
         metrics["iteration"] = float(iteration)
-        if validation_fn is not None:
+        should_validate = (
+            iteration % config.validation_interval == 0
+            or iteration == config.iterations
+        )
+        if validation_fn is not None and should_validate:
             metrics.update(validation_fn(model))
         if metrics_callback is not None:
             metrics_callback(metrics)
@@ -177,6 +199,7 @@ def _run_training_iteration(
             exploration_fraction=config.exploration_fraction,
             max_moves=config.max_moves,
             value_target=config.value_target,
+            ownership_target=config.ownership_loss_weight > 0.0,
             rng=rng,
         )
         replay.add_many(samples)
@@ -194,6 +217,7 @@ def _run_training_iteration(
     running_loss = 0.0
     running_policy_loss = 0.0
     running_value_loss = 0.0
+    running_ownership_loss = 0.0
     for _ in range(config.train_steps):
         batch = replay.sample(config.batch_size, rng=rng)
         step_metrics = train_step(
@@ -202,15 +226,18 @@ def _run_training_iteration(
             batch,
             device=device,
             augment_symmetries=config.augment_symmetries,
+            ownership_loss_weight=config.ownership_loss_weight,
         )
         running_loss += step_metrics["loss"]
         running_policy_loss += step_metrics["policy_loss"]
         running_value_loss += step_metrics["value_loss"]
+        running_ownership_loss += step_metrics["ownership_loss"]
 
     metrics["train_steps_completed"] = float(config.train_steps)
     metrics["loss"] = running_loss / config.train_steps
     metrics["policy_loss"] = running_policy_loss / config.train_steps
     metrics["value_loss"] = running_value_loss / config.train_steps
+    metrics["ownership_loss"] = running_ownership_loss / config.train_steps
     metrics["replay_size"] = float(len(replay))
     return metrics
 
@@ -218,7 +245,8 @@ def _run_training_iteration(
 def _augment_go_symmetries(
     observations: torch.Tensor,
     target_policies: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    target_ownerships: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
     assert observations.dim() == 2
     assert target_policies.dim() == 2
     batch_size = observations.shape[0]
@@ -237,6 +265,7 @@ def _augment_go_symmetries(
 
     augmented_observations = []
     augmented_policy_boards = []
+    augmented_ownership_boards = []
     for sample_idx in range(batch_size):
         transform_idx = int(torch.randint(0, 8, (1,)).item())
         augmented_observations.append(
@@ -251,6 +280,17 @@ def _augment_go_symmetries(
                 transform_idx,
             )
         )
+        if target_ownerships is not None:
+            ownership_board = target_ownerships[sample_idx].reshape(
+                board_size,
+                board_size,
+            )
+            augmented_ownership_boards.append(
+                _apply_d4_transform(
+                    ownership_board,
+                    transform_idx,
+                )
+            )
 
     stacked_observations = torch.stack(augmented_observations).reshape(
         batch_size,
@@ -260,7 +300,17 @@ def _augment_go_symmetries(
         batch_size,
         board_actions,
     )
-    return stacked_observations, torch.cat([stacked_policy_boards, pass_policy], dim=1)
+    augmented_ownerships = None
+    if target_ownerships is not None:
+        augmented_ownerships = torch.stack(augmented_ownership_boards).reshape(
+            batch_size,
+            board_actions,
+        )
+    return (
+        stacked_observations,
+        torch.cat([stacked_policy_boards, pass_policy], dim=1),
+        augmented_ownerships,
+    )
 
 
 def _apply_d4_transform(tensor: torch.Tensor, transform_idx: int) -> torch.Tensor:
@@ -269,3 +319,18 @@ def _apply_d4_transform(tensor: torch.Tensor, transform_idx: int) -> torch.Tenso
     if transform_idx >= 4:
         transformed = torch.flip(transformed, dims=(-1,))
     return transformed
+
+
+def _ownership_tensor(
+    batch: list[SelfPlaySample],
+    device: torch.device,
+    ownership_loss_weight: float,
+) -> torch.Tensor | None:
+    if ownership_loss_weight == 0.0:
+        return None
+    assert all(sample.ownership is not None for sample in batch)
+    return torch.tensor(
+        [sample.ownership for sample in batch],
+        dtype=torch.float32,
+        device=device,
+    )

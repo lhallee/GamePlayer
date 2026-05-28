@@ -120,6 +120,29 @@ class GoRulesTest(unittest.TestCase):
         self.assertEqual(state.area_scores(), (9.0, 9.5))
         self.assertEqual(state.winner(), WHITE)
 
+    def test_ownership_marks_surrounded_territory(self):
+        state = GoState(
+            board_size=3,
+            komi=0.5,
+            board=(
+                BLACK, BLACK, BLACK,
+                BLACK, EMPTY, BLACK,
+                BLACK, BLACK, BLACK,
+            ),
+            current_player=WHITE,
+            consecutive_passes=0,
+            position_history=(),
+        )
+
+        self.assertEqual(
+            state.ownership(),
+            (
+                BLACK, BLACK, BLACK,
+                BLACK, BLACK, BLACK,
+                BLACK, BLACK, BLACK,
+            ),
+        )
+
     def test_observation_is_current_player_perspective(self):
         state = GoState.new(board_size=3, komi=0.5)
         state = state.apply_action(point_to_action(0, 0, 3))

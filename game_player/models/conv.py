@@ -13,6 +13,7 @@ class ConvPolicyValueOutput:
     value: torch.Tensor
     board_size: int
     include_pass: bool
+    ownership: torch.Tensor | None = None
 
     @property
     def board_logits(self) -> torch.Tensor:
@@ -61,6 +62,7 @@ class ConvPolicyValueNet(nn.Module, PyTorchModelHubMixin):
         self.channels = channels
         self.blocks = blocks
         self.include_pass = include_pass
+        self.predicts_ownership = True
 
         self.input_size = 2 * board_size * board_size
         self.num_board_actions = board_size * board_size
@@ -88,6 +90,10 @@ class ConvPolicyValueNet(nn.Module, PyTorchModelHubMixin):
             nn.Linear(channels, 1),
             nn.Tanh(),
         )
+        self.ownership_head = nn.Sequential(
+            nn.Conv2d(channels, 1, kernel_size=1),
+            nn.Tanh(),
+        )
 
     def forward(self, observation: torch.Tensor) -> ConvPolicyValueOutput:
         if observation.dim() == 2:
@@ -106,9 +112,11 @@ class ConvPolicyValueNet(nn.Module, PyTorchModelHubMixin):
         hidden = self.torso(self.stem(observation.float()))
         policy_logits = self.policy_head(hidden)
         value = self.value_head(hidden).squeeze(-1)
+        ownership = self.ownership_head(hidden).squeeze(1)
         return ConvPolicyValueOutput(
             policy_logits=policy_logits,
             value=value,
             board_size=self.board_size,
             include_pass=self.include_pass,
+            ownership=ownership,
         )

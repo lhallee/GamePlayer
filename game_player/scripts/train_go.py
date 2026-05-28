@@ -9,6 +9,7 @@ import torch
 from game_player.az.evaluation import (
     HybridPolicyRolloutEvaluator,
     RandomRolloutEvaluator,
+    TrompTaylorTacticalEvaluator,
     evaluate_model_against_random_agent,
     evaluate_model_against_random_weights,
 )
@@ -124,8 +125,58 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mcts-evaluator",
-        choices=["neural", "rollout", "hybrid"],
+        choices=["neural", "rollout", "hybrid", "tactical"],
         default="neural",
+    )
+    parser.add_argument(
+        "--tactical-area-weight",
+        type=float,
+        default=1.0,
+    )
+    parser.add_argument(
+        "--tactical-prior-temperature",
+        type=float,
+        default=2.0,
+    )
+    parser.add_argument(
+        "--tactical-capture-weight",
+        type=float,
+        default=100.0,
+    )
+    parser.add_argument(
+        "--tactical-liberty-weight",
+        type=float,
+        default=5.0,
+    )
+    parser.add_argument(
+        "--tactical-stone-weight",
+        type=float,
+        default=0.25,
+    )
+    parser.add_argument(
+        "--tactical-adjacent-opponent-weight",
+        type=float,
+        default=2.0,
+    )
+    parser.add_argument(
+        "--tactical-adjacent-own-weight",
+        type=float,
+        default=1.0,
+    )
+    parser.add_argument(
+        "--tactical-opponent-liberty-reduction-weight",
+        type=float,
+        default=10.0,
+    )
+    parser.add_argument(
+        "--tactical-opponent-atari-weight",
+        type=float,
+        default=15.0,
+    )
+    parser.add_argument(
+        "--tactical-self-atari-weight",
+        type=float,
+        default=-15.0,
     )
     parser.add_argument(
         "--rollout-games",
@@ -142,6 +193,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
     )
     parser.add_argument(
+        "--ownership-loss-weight",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="cpu",
@@ -150,6 +206,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--validation-games",
         type=int,
         default=0,
+    )
+    parser.add_argument(
+        "--validation-interval",
+        type=int,
+        default=1,
     )
     parser.add_argument(
         "--validation-opponent",
@@ -170,6 +231,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--seed",
         type=int,
         default=0,
+    )
+    parser.add_argument(
+        "--init-model",
+        type=str,
+        default=None,
     )
     parser.add_argument(
         "--output-dir",
@@ -212,7 +278,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     torch.manual_seed(args.seed)
-    model = build_model(args)
+    if args.init_model is None:
+        model = build_model(args)
+    else:
+        model = load_model(args.init_model, args.model_type)
     random_weight_baseline = build_model(args)
     config = TrainingConfig(
         board_size=args.board_size,
@@ -232,6 +301,8 @@ def main() -> None:
         exploration_fraction=args.exploration_fraction,
         value_target=args.value_target,
         augment_symmetries=args.augment_symmetries,
+        ownership_loss_weight=args.ownership_loss_weight,
+        validation_interval=args.validation_interval,
     )
     metrics_by_iteration = run_training_cli(
         model=model,
@@ -268,15 +339,32 @@ def main() -> None:
             "max_moves": args.max_moves,
             "value_target": args.value_target,
             "mcts_evaluator": args.mcts_evaluator,
+            "tactical_area_weight": args.tactical_area_weight,
+            "tactical_prior_temperature": args.tactical_prior_temperature,
+            "tactical_capture_weight": args.tactical_capture_weight,
+            "tactical_liberty_weight": args.tactical_liberty_weight,
+            "tactical_stone_weight": args.tactical_stone_weight,
+            "tactical_adjacent_opponent_weight": (
+                args.tactical_adjacent_opponent_weight
+            ),
+            "tactical_adjacent_own_weight": args.tactical_adjacent_own_weight,
+            "tactical_opponent_liberty_reduction_weight": (
+                args.tactical_opponent_liberty_reduction_weight
+            ),
+            "tactical_opponent_atari_weight": args.tactical_opponent_atari_weight,
+            "tactical_self_atari_weight": args.tactical_self_atari_weight,
             "rollout_games": args.rollout_games,
             "rollout_max_moves": args.rollout_max_moves,
             "augment_symmetries": args.augment_symmetries,
+            "ownership_loss_weight": args.ownership_loss_weight,
             "device": args.device,
             "validation_games": args.validation_games,
+            "validation_interval": args.validation_interval,
             "validation_opponent": args.validation_opponent,
             "validation_max_moves": args.validation_max_moves,
             "target_win_rate": args.target_win_rate,
             "seed": args.seed,
+            "init_model": args.init_model,
             "output_dir": args.output_dir,
             "checkpoint_dir": args.checkpoint_dir,
             "best_checkpoint_dir": args.best_checkpoint_dir,
@@ -288,6 +376,18 @@ def main() -> None:
         run_name=args.run_name,
         device=args.device,
         mcts_evaluator=args.mcts_evaluator,
+        tactical_area_weight=args.tactical_area_weight,
+        tactical_prior_temperature=args.tactical_prior_temperature,
+        tactical_capture_weight=args.tactical_capture_weight,
+        tactical_liberty_weight=args.tactical_liberty_weight,
+        tactical_stone_weight=args.tactical_stone_weight,
+        tactical_adjacent_opponent_weight=args.tactical_adjacent_opponent_weight,
+        tactical_adjacent_own_weight=args.tactical_adjacent_own_weight,
+        tactical_opponent_liberty_reduction_weight=(
+            args.tactical_opponent_liberty_reduction_weight
+        ),
+        tactical_opponent_atari_weight=args.tactical_opponent_atari_weight,
+        tactical_self_atari_weight=args.tactical_self_atari_weight,
         rollout_games=args.rollout_games,
         rollout_max_moves=args.rollout_max_moves,
     )
@@ -315,6 +415,14 @@ def build_model(args: argparse.Namespace) -> torch.nn.Module:
     raise ValueError(f"Unknown model type: {args.model_type}")
 
 
+def load_model(path_or_repo_id: str, model_type: str) -> torch.nn.Module:
+    if model_type == "mlp":
+        return MLPPolicyValueNet.from_pretrained(path_or_repo_id)
+    if model_type == "conv":
+        return ConvPolicyValueNet.from_pretrained(path_or_repo_id)
+    raise ValueError(f"Unknown model type: {model_type}")
+
+
 def run_training_cli(
     model: torch.nn.Module,
     config: TrainingConfig,
@@ -332,12 +440,22 @@ def run_training_cli(
     run_name: str,
     device: str,
     mcts_evaluator: str = "neural",
+    tactical_area_weight: float = 1.0,
+    tactical_prior_temperature: float = 2.0,
+    tactical_capture_weight: float = 100.0,
+    tactical_liberty_weight: float = 5.0,
+    tactical_stone_weight: float = 0.25,
+    tactical_adjacent_opponent_weight: float = 2.0,
+    tactical_adjacent_own_weight: float = 1.0,
+    tactical_opponent_liberty_reduction_weight: float = 10.0,
+    tactical_opponent_atari_weight: float = 15.0,
+    tactical_self_atari_weight: float = -15.0,
     rollout_games: int = 1,
     rollout_max_moves: int | None = None,
 ) -> list[dict[str, float]]:
     assert save_every > 0
     assert rollout_games > 0
-    assert mcts_evaluator in ("neural", "rollout", "hybrid")
+    assert mcts_evaluator in ("neural", "rollout", "hybrid", "tactical")
     if target_win_rate is not None:
         assert 0.0 <= target_win_rate <= 1.0
 
@@ -400,6 +518,18 @@ def run_training_cli(
     search_evaluator = build_search_evaluator(
         model=model,
         mcts_evaluator=mcts_evaluator,
+        tactical_area_weight=tactical_area_weight,
+        tactical_prior_temperature=tactical_prior_temperature,
+        tactical_capture_weight=tactical_capture_weight,
+        tactical_liberty_weight=tactical_liberty_weight,
+        tactical_stone_weight=tactical_stone_weight,
+        tactical_adjacent_opponent_weight=tactical_adjacent_opponent_weight,
+        tactical_adjacent_own_weight=tactical_adjacent_own_weight,
+        tactical_opponent_liberty_reduction_weight=(
+            tactical_opponent_liberty_reduction_weight
+        ),
+        tactical_opponent_atari_weight=tactical_opponent_atari_weight,
+        tactical_self_atari_weight=tactical_self_atari_weight,
         rollout_games=rollout_games,
         rollout_max_moves=rollout_max_moves,
         seed=config.seed,
@@ -419,6 +549,16 @@ def run_training_cli(
 def build_search_evaluator(
     model: torch.nn.Module,
     mcts_evaluator: str,
+    tactical_area_weight: float,
+    tactical_prior_temperature: float,
+    tactical_capture_weight: float,
+    tactical_liberty_weight: float,
+    tactical_stone_weight: float,
+    tactical_adjacent_opponent_weight: float,
+    tactical_adjacent_own_weight: float,
+    tactical_opponent_liberty_reduction_weight: float,
+    tactical_opponent_atari_weight: float,
+    tactical_self_atari_weight: float,
     rollout_games: int,
     rollout_max_moves: int | None,
     seed: int,
@@ -439,6 +579,21 @@ def build_search_evaluator(
             max_moves=rollout_max_moves,
             device=device,
             seed=seed,
+        )
+    if mcts_evaluator == "tactical":
+        return TrompTaylorTacticalEvaluator(
+            prior_temperature=tactical_prior_temperature,
+            area_weight=tactical_area_weight,
+            capture_weight=tactical_capture_weight,
+            liberty_weight=tactical_liberty_weight,
+            stone_weight=tactical_stone_weight,
+            adjacent_opponent_weight=tactical_adjacent_opponent_weight,
+            adjacent_own_weight=tactical_adjacent_own_weight,
+            opponent_liberty_reduction_weight=(
+                tactical_opponent_liberty_reduction_weight
+            ),
+            opponent_atari_weight=tactical_opponent_atari_weight,
+            self_atari_weight=tactical_self_atari_weight,
         )
     raise ValueError(f"Unknown MCTS evaluator: {mcts_evaluator}")
 

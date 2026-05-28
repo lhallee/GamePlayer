@@ -32,7 +32,7 @@ def write_training_report(
 
     _plot_metric_group(
         metrics=metrics,
-        keys=["loss", "policy_loss", "value_loss"],
+        keys=["loss", "policy_loss", "value_loss", "ownership_loss"],
         title="Training Loss",
         ylabel="loss",
         output_path=report_dir / "loss.png",
@@ -45,6 +45,32 @@ def write_training_report(
         output_path=report_dir / "validation_win_rate.png",
         y_min=0.0,
         y_max=1.0,
+    )
+    _plot_metric_group(
+        metrics=metrics,
+        keys=[
+            "validation_candidate_black_win_rate",
+            "validation_candidate_white_win_rate",
+        ],
+        title="Validation Win Rate By Color",
+        ylabel="win rate",
+        output_path=report_dir / "validation_color_win_rate.png",
+        y_min=0.0,
+        y_max=1.0,
+    )
+    _plot_metric_group(
+        metrics=metrics,
+        keys=["validation_candidate_avg_score_margin"],
+        title="Validation Score Margin",
+        ylabel="points",
+        output_path=report_dir / "validation_score_margin.png",
+    )
+    _plot_metric_group(
+        metrics=metrics,
+        keys=["validation_avg_moves", "validation_terminal_rate"],
+        title="Validation Game Dynamics",
+        ylabel="value",
+        output_path=report_dir / "validation_game_dynamics.png",
     )
     _plot_metric_group(
         metrics=metrics,
@@ -141,6 +167,12 @@ def _write_markdown_report(
         "![Training loss](loss.png)",
         "",
         "![Validation win rate](validation_win_rate.png)",
+        "",
+        "![Validation win rate by color](validation_color_win_rate.png)",
+        "",
+        "![Validation score margin](validation_score_margin.png)",
+        "",
+        "![Validation game dynamics](validation_game_dynamics.png)",
         "",
         "![Self-play data](self_play.png)",
         "",

@@ -12,6 +12,7 @@ class SelfPlaySample:
     observation: list[float]
     policy: list[float]
     value: float
+    ownership: list[float] | None = None
 
 
 def play_self_play_game(
@@ -25,6 +26,7 @@ def play_self_play_game(
     exploration_fraction: float = 0.25,
     max_moves: int | None = None,
     value_target: str = "outcome",
+    ownership_target: bool = False,
     rng: random.Random | None = None,
 ) -> tuple[list[SelfPlaySample], GameState]:
     assert simulations > 0
@@ -61,6 +63,11 @@ def play_self_play_game(
             observation=observation,
             policy=policy,
             value=_final_value_for_player(state, player, value_target),
+            ownership=(
+                _final_ownership_for_player(state, player)
+                if ownership_target
+                else None
+            ),
         )
         for observation, policy, player in trajectory
     ]
@@ -97,3 +104,22 @@ def _final_value_for_player(
         value = score_margin / board_area
         return max(-1.0, min(1.0, value))
     raise ValueError(f"Unknown value target: {value_target}")
+
+
+def _final_ownership_for_player(
+    state: GameState,
+    player: Player,
+) -> list[float]:
+    ownership = state.ownership()
+    return [
+        _ownership_value_for_player(owner=owner, player=player)
+        for owner in ownership
+    ]
+
+
+def _ownership_value_for_player(owner: Player, player: Player) -> float:
+    if owner == player:
+        return 1.0
+    if owner == -player:
+        return -1.0
+    return 0.0

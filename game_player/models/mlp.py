@@ -13,6 +13,7 @@ class PolicyValueOutput:
     value: torch.Tensor
     board_size: int
     include_pass: bool
+    ownership: torch.Tensor | None = None
 
     @property
     def board_logits(self) -> torch.Tensor:
@@ -47,6 +48,7 @@ class MLPPolicyValueNet(nn.Module, PyTorchModelHubMixin):
         self.hidden_size = hidden_size
         self.depth = depth
         self.include_pass = include_pass
+        self.predicts_ownership = False
 
         self.input_size = 2 * board_size * board_size
         self.num_board_actions = board_size * board_size

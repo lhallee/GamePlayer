@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass
 
@@ -10,7 +11,13 @@ from game_player.agents.argmax_agent import ArgmaxPolicyAgent
 from game_player.agents.base import Agent
 from game_player.agents.random_agent import RandomAgent
 from game_player.games.base import Action, GameState, Player
-from game_player.games.go import BLACK, WHITE, GoState
+from game_player.games.go import (
+    BLACK,
+    WHITE,
+    GoState,
+    _collect_group,
+    _neighbors,
+)
 
 
 class NeuralPolicyValueEvaluator:
@@ -103,6 +110,169 @@ class HybridPolicyRolloutEvaluator:
         return priors, self.rollout_evaluator.estimate_value(state)
 
 
+class TrompTaylorTacticalEvaluator:
+    def __init__(
+        self,
+        prior_temperature: float = 2.0,
+        pass_prior: float = 1e-6,
+        area_weight: float = 1.0,
+        capture_weight: float = 100.0,
+        liberty_weight: float = 5.0,
+        stone_weight: float = 0.25,
+        adjacent_opponent_weight: float = 2.0,
+        adjacent_own_weight: float = 1.0,
+        opponent_liberty_reduction_weight: float = 10.0,
+        opponent_atari_weight: float = 15.0,
+        self_atari_weight: float = -15.0,
+        suicide_weight: float = -1000.0,
+    ) -> None:
+        assert prior_temperature > 0.0
+        assert pass_prior > 0.0
+        self.prior_temperature = prior_temperature
+        self.pass_prior = pass_prior
+        self.area_weight = area_weight
+        self.capture_weight = capture_weight
+        self.liberty_weight = liberty_weight
+        self.stone_weight = stone_weight
+        self.adjacent_opponent_weight = adjacent_opponent_weight
+        self.adjacent_own_weight = adjacent_own_weight
+        self.opponent_liberty_reduction_weight = opponent_liberty_reduction_weight
+        self.opponent_atari_weight = opponent_atari_weight
+        self.self_atari_weight = self_atari_weight
+        self.suicide_weight = suicide_weight
+
+    def __call__(self, state: GameState) -> tuple[dict[Action, float], float]:
+        assert isinstance(state, GoState)
+        legal_actions = state.legal_actions()
+        assert legal_actions
+
+        action_scores = {
+            action: self._action_score(state, action)
+            for action in legal_actions
+        }
+        priors = _softmax_action_scores(
+            action_scores=action_scores,
+            temperature=self.prior_temperature,
+        )
+        return priors, _score_value_for_current_player(state)
+
+    def _action_score(self, state: GoState, action: Action) -> float:
+        if action == state.pass_action:
+            if len(state.legal_actions()) == 1:
+                return 0.0
+            return math.log(self.pass_prior)
+
+        before_opponent_stones = sum(
+            1
+            for point in state.board
+            if point == -state.current_player
+        )
+        opponent_groups = _neighboring_opponent_groups(state, action)
+        next_state = state.apply_action(action)
+        after_opponent_stones = sum(
+            1
+            for point in next_state.board
+            if point == -state.current_player
+        )
+        captured_stones = before_opponent_stones - after_opponent_stones
+        own_stones = sum(
+            1
+            for point in next_state.board
+            if point == state.current_player
+        )
+        opponent_stones = sum(
+            1
+            for point in next_state.board
+            if point == -state.current_player
+        )
+        group_liberties = 0
+        suicide = 0
+        if next_state.board[action] == state.current_player:
+            _, liberties = _collect_group(
+                next_state.board,
+                action,
+                next_state.board_size,
+            )
+            group_liberties = len(liberties)
+        else:
+            suicide = 1
+
+        adjacent_opponents = sum(
+            1
+            for neighbor in _neighbors(action, state.board_size)
+            if state.board[neighbor] == -state.current_player
+        )
+        adjacent_own = sum(
+            1
+            for neighbor in _neighbors(action, state.board_size)
+            if state.board[neighbor] == state.current_player
+        )
+        opponent_liberty_reduction = 0
+        opponent_groups_in_atari = 0
+        for group, before_liberties in opponent_groups:
+            remaining_points = [
+                point
+                for point in group
+                if next_state.board[point] == -state.current_player
+            ]
+            if not remaining_points:
+                opponent_liberty_reduction += before_liberties
+                continue
+            _, after_liberties = _collect_group(
+                next_state.board,
+                remaining_points[0],
+                next_state.board_size,
+            )
+            opponent_liberty_reduction += max(
+                0,
+                before_liberties - len(after_liberties),
+            )
+            opponent_groups_in_atari += int(len(after_liberties) == 1)
+        self_atari = int(group_liberties == 1 and captured_stones == 0)
+        area_margin = 0.0
+        if self.area_weight != 0.0:
+            black_score, white_score = next_state.area_scores()
+            area_margin = (
+                black_score - white_score
+                if state.current_player == BLACK
+                else white_score - black_score
+            )
+
+        return (
+            self.area_weight * area_margin
+            + self.capture_weight * captured_stones
+            + self.liberty_weight * group_liberties
+            + self.adjacent_opponent_weight * adjacent_opponents
+            + self.adjacent_own_weight * adjacent_own
+            + self.opponent_liberty_reduction_weight * opponent_liberty_reduction
+            + self.opponent_atari_weight * opponent_groups_in_atari
+            + self.self_atari_weight * self_atari
+            + self.suicide_weight * suicide
+            + self.stone_weight * (own_stones - opponent_stones)
+        )
+
+
+def _neighboring_opponent_groups(
+    state: GoState,
+    action: Action,
+) -> list[tuple[set[int], int]]:
+    seen: set[int] = set()
+    groups: list[tuple[set[int], int]] = []
+    for neighbor in _neighbors(action, state.board_size):
+        if state.board[neighbor] != -state.current_player:
+            continue
+        if neighbor in seen:
+            continue
+        group, liberties = _collect_group(
+            state.board,
+            neighbor,
+            state.board_size,
+        )
+        seen.update(group)
+        groups.append((group, len(liberties)))
+    return groups
+
+
 def _random_rollout_result(
     state: GameState,
     max_moves: int | None,
@@ -124,12 +294,43 @@ def _random_rollout_result(
     return rollout_state.result_for_player(root_player)
 
 
+def _score_value_for_current_player(state: GoState) -> float:
+    black_score, white_score = state.area_scores()
+    score_margin = (
+        black_score - white_score
+        if state.current_player == BLACK
+        else white_score - black_score
+    )
+    board_area = state.board_size * state.board_size
+    value = score_margin / board_area
+    return max(-1.0, min(1.0, value))
+
+
+def _softmax_action_scores(
+    action_scores: dict[Action, float],
+    temperature: float,
+) -> dict[Action, float]:
+    assert action_scores
+    max_score = max(action_scores.values())
+    exponentials = {
+        action: math.exp((score - max_score) / temperature)
+        for action, score in action_scores.items()
+    }
+    total = sum(exponentials.values())
+    assert total > 0.0
+    return {
+        action: value / total
+        for action, value in exponentials.items()
+    }
+
+
 @dataclass(frozen=True)
 class MatchResult:
     winner: Player
     black_score: float
     white_score: float
     moves: int
+    terminal: bool
 
 
 def play_match(
@@ -153,6 +354,7 @@ def play_match(
         black_score=black_score,
         white_score=white_score,
         moves=moves,
+        terminal=state.is_terminal(),
     )
 
 
@@ -200,7 +402,12 @@ def evaluate_model_against_random_weights(
     baseline_agent = ArgmaxPolicyAgent(baseline_model, device=device)
     candidate_wins = 0
     candidate_black_games = 0
+    candidate_black_wins = 0
     candidate_white_games = 0
+    candidate_white_wins = 0
+    candidate_score_margin = 0.0
+    total_moves = 0
+    terminal_games = 0
 
     for game_idx in range(games):
         state = GoState.new(board_size=board_size, komi=komi)
@@ -213,7 +420,10 @@ def evaluate_model_against_random_weights(
                 white_agent=baseline_agent,
                 max_moves=max_moves,
             )
-            candidate_wins += int(result.winner == BLACK)
+            win = int(result.winner == BLACK)
+            candidate_black_wins += win
+            candidate_wins += win
+            candidate_score_margin += result.black_score - result.white_score
         else:
             candidate_white_games += 1
             result = play_match(
@@ -222,14 +432,33 @@ def evaluate_model_against_random_weights(
                 white_agent=candidate_agent,
                 max_moves=max_moves,
             )
-            candidate_wins += int(result.winner == WHITE)
+            win = int(result.winner == WHITE)
+            candidate_white_wins += win
+            candidate_wins += win
+            candidate_score_margin += result.white_score - result.black_score
+        total_moves += result.moves
+        terminal_games += int(result.terminal)
 
     return {
         "validation_games": float(games),
         "validation_candidate_wins": float(candidate_wins),
         "validation_candidate_win_rate": candidate_wins / games,
+        "validation_candidate_avg_score_margin": candidate_score_margin / games,
+        "validation_avg_moves": total_moves / games,
+        "validation_terminal_games": float(terminal_games),
+        "validation_terminal_rate": terminal_games / games,
         "validation_candidate_black_games": float(candidate_black_games),
+        "validation_candidate_black_wins": float(candidate_black_wins),
+        "validation_candidate_black_win_rate": _win_rate(
+            candidate_black_wins,
+            candidate_black_games,
+        ),
         "validation_candidate_white_games": float(candidate_white_games),
+        "validation_candidate_white_wins": float(candidate_white_wins),
+        "validation_candidate_white_win_rate": _win_rate(
+            candidate_white_wins,
+            candidate_white_games,
+        ),
     }
 
 
@@ -248,7 +477,12 @@ def evaluate_model_against_random_agent(
     random_agent = RandomAgent(seed=seed)
     candidate_wins = 0
     candidate_black_games = 0
+    candidate_black_wins = 0
     candidate_white_games = 0
+    candidate_white_wins = 0
+    candidate_score_margin = 0.0
+    total_moves = 0
+    terminal_games = 0
 
     for game_idx in range(games):
         state = GoState.new(board_size=board_size, komi=komi)
@@ -261,7 +495,10 @@ def evaluate_model_against_random_agent(
                 white_agent=random_agent,
                 max_moves=max_moves,
             )
-            candidate_wins += int(result.winner == BLACK)
+            win = int(result.winner == BLACK)
+            candidate_black_wins += win
+            candidate_wins += win
+            candidate_score_margin += result.black_score - result.white_score
         else:
             candidate_white_games += 1
             result = play_match(
@@ -270,12 +507,37 @@ def evaluate_model_against_random_agent(
                 white_agent=candidate_agent,
                 max_moves=max_moves,
             )
-            candidate_wins += int(result.winner == WHITE)
+            win = int(result.winner == WHITE)
+            candidate_white_wins += win
+            candidate_wins += win
+            candidate_score_margin += result.white_score - result.black_score
+        total_moves += result.moves
+        terminal_games += int(result.terminal)
 
     return {
         "validation_games": float(games),
         "validation_candidate_wins": float(candidate_wins),
         "validation_candidate_win_rate": candidate_wins / games,
+        "validation_candidate_avg_score_margin": candidate_score_margin / games,
+        "validation_avg_moves": total_moves / games,
+        "validation_terminal_games": float(terminal_games),
+        "validation_terminal_rate": terminal_games / games,
         "validation_candidate_black_games": float(candidate_black_games),
+        "validation_candidate_black_wins": float(candidate_black_wins),
+        "validation_candidate_black_win_rate": _win_rate(
+            candidate_black_wins,
+            candidate_black_games,
+        ),
         "validation_candidate_white_games": float(candidate_white_games),
+        "validation_candidate_white_wins": float(candidate_white_wins),
+        "validation_candidate_white_win_rate": _win_rate(
+            candidate_white_wins,
+            candidate_white_games,
+        ),
     }
+
+
+def _win_rate(wins: int, games: int) -> float:
+    if games == 0:
+        return 0.0
+    return wins / games

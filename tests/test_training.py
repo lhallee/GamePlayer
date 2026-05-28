@@ -65,19 +65,19 @@ class TrainingTest(unittest.TestCase):
                 validation_games=1,
                 validation_opponent="random-agent",
                 validation_max_moves=4,
-            target_win_rate=None,
-            checkpoint_dir=root / "checkpoints",
-            best_checkpoint_dir=root / "best",
-            save_every=1,
-            metrics_path=root / "metrics.jsonl",
-            report_dir=root / "report",
-            run_config={"board_size": 3},
-            run_name="Training Smoke",
-            device="cpu",
-            mcts_evaluator="rollout",
-            rollout_games=1,
-            rollout_max_moves=4,
-        )
+                target_win_rate=None,
+                checkpoint_dir=root / "checkpoints",
+                best_checkpoint_dir=root / "best",
+                save_every=1,
+                metrics_path=root / "metrics.jsonl",
+                report_dir=root / "report",
+                run_config={"board_size": 3},
+                run_name="Training Smoke",
+                device="cpu",
+                mcts_evaluator="rollout",
+                rollout_games=1,
+                rollout_max_moves=4,
+            )
             self.assertEqual(len(metrics), 1)
             self.assertTrue((root / "metrics.jsonl").exists())
             self.assertTrue((root / "checkpoints" / "iteration-0001").exists())
@@ -87,6 +87,37 @@ class TrainingTest(unittest.TestCase):
             self.assertTrue((root / "best" / "config.json").exists())
             self.assertTrue((root / "report" / "report.md").exists())
             self.assertTrue((root / "report" / "loss.png").exists())
+
+    def test_validation_interval_skips_middle_iterations_but_keeps_final(self):
+        model = MLPPolicyValueNet(board_size=3, hidden_size=16, depth=1)
+        config = TrainingConfig(
+            board_size=3,
+            komi=0.5,
+            iterations=3,
+            self_play_games=1,
+            mcts_simulations=2,
+            batch_size=2,
+            train_steps=0,
+            max_moves=4,
+            seed=0,
+            validation_interval=2,
+        )
+        validation_calls = 0
+
+        def validation_fn(candidate_model: torch.nn.Module) -> dict[str, float]:
+            nonlocal validation_calls
+            validation_calls += 1
+            return {"validation_candidate_win_rate": 0.5}
+
+        metrics = run_training_iterations(
+            model=model,
+            config=config,
+            validation_fn=validation_fn,
+        )
+        self.assertEqual(validation_calls, 2)
+        self.assertNotIn("validation_candidate_win_rate", metrics[0])
+        self.assertIn("validation_candidate_win_rate", metrics[1])
+        self.assertIn("validation_candidate_win_rate", metrics[2])
 
 
 if __name__ == "__main__":

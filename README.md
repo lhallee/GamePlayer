@@ -23,7 +23,10 @@ The initial Go implementation follows the AlphaZero shape:
 4. Training minimizes policy cross-entropy plus value MSE.
 5. Direct inference uses argmax over legal policy logits, without MCTS.
 
-The default model is a small MLP over two flattened board channels:
+The default Go training model is a small convolutional policy-value network
+with an optional ownership head. The MLP remains useful for smoke tests.
+
+The current Go observation has two flattened board channels:
 
 - current player's stones
 - opponent stones
@@ -69,13 +72,17 @@ game-player-train-go --board-size 5 --iterations 5 --self-play-games 4 --mcts-si
 ```
 
 Each checkpoint directory can be loaded with `MLPPolicyValueNet.from_pretrained`
-or pushed with `model.push_to_hub(...)`.
+or `ConvPolicyValueNet.from_pretrained`, depending on `--model-type`, or pushed
+with `model.push_to_hub(...)`.
 
 When `--report-dir` is provided, training writes:
 
 - `report.md`
 - `loss.png`
 - `validation_win_rate.png`
+- `validation_color_win_rate.png`
+- `validation_score_margin.png`
+- `validation_game_dynamics.png`
 - `self_play.png`
 
 Evaluate a saved Go checkpoint against a random-weight model:
@@ -86,23 +93,26 @@ game-player-eval-go --model runs/go5/checkpoints/iteration-0001 --opponent rando
 
 ## Training Recipes
 
-All current recipes use the `MLPPolicyValueNet` model:
-
-- observation: current-player stones plus opponent stones
-- policy head: board logits plus pass logit
-- value head: scalar win/loss estimate
-- self-play target: AlphaZero-style MCTS visit policy
-
-Small 5x5 smoke run:
+Tiny local smoke run:
 
 ```powershell
-game-player-train-go --board-size 5 --komi 2.5 --hidden-size 128 --depth 2 --iterations 5 --self-play-games 4 --mcts-simulations 8 --train-steps 16 --batch-size 32 --max-moves 60 --validation-games 40 --validation-opponent random-weights --validation-max-moves 80 --target-win-rate 0.9 --metrics-path runs/go5_mlp/metrics.jsonl --report-dir runs/go5_mlp/report --checkpoint-dir runs/go5_mlp/checkpoints --best-checkpoint-dir runs/go5_mlp/best
+game-player-train-go --board-size 5 --komi 2.5 --model-type mlp --hidden-size 128 --depth 2 --iterations 3 --self-play-games 2 --mcts-simulations 4 --train-steps 4 --batch-size 8 --max-moves 50 --validation-games 4 --validation-opponent random-agent --metrics-path runs/go5_smoke/metrics.jsonl --report-dir runs/go5_smoke/report --checkpoint-dir runs/go5_smoke/checkpoints
 ```
 
-Verified 19x19 MLP run:
+Current 9x9 Conv tactical bootstrap recipe:
 
 ```powershell
-game-player-train-go --board-size 19 --komi 7.5 --hidden-size 256 --depth 2 --iterations 10 --self-play-games 2 --mcts-simulations 4 --train-steps 8 --batch-size 16 --max-moves 120 --validation-games 40 --validation-opponent random-weights --validation-max-moves 160 --target-win-rate 0.9 --metrics-path runs/go19_mlp/metrics.jsonl --report-dir runs/go19_mlp/report --checkpoint-dir runs/go19_mlp/checkpoints --best-checkpoint-dir runs/go19_mlp/best --run-name "Go 19x19 MLP AlphaZero"
+game-player-train-go --board-size 9 --komi 7.5 --model-type conv --channels 32 --blocks 3 --iterations 24 --self-play-games 8 --mcts-simulations 1 --mcts-evaluator tactical --value-target score --augment-symmetries --ownership-loss-weight 0.5 --train-steps 192 --batch-size 128 --max-moves 120 --validation-games 100 --validation-opponent random-agent --validation-max-moves 120 --target-win-rate 0.99 --seed 3 --metrics-path runs/go9_conv_tactical/metrics.jsonl --report-dir runs/go9_conv_tactical/report --checkpoint-dir runs/go9_conv_tactical/checkpoints --best-checkpoint-dir runs/go9_conv_tactical/best --run-name "Go 9x9 Conv Tactical Bootstrap"
+```
+
+This recipe trains with a rules-only tactical search teacher and validates
+argmax-only network inference against uniform random legal play. It is a
+bootstrap recipe, not pure AlphaGo Zero.
+
+Current 19x19 continuation recipe:
+
+```powershell
+game-player-train-go --board-size 19 --komi 7.5 --model-type conv --channels 32 --blocks 3 --init-model runs/go19_conv_tactical_probe/checkpoints/iteration-0008 --iterations 20 --self-play-games 2 --mcts-simulations 1 --mcts-evaluator tactical --tactical-area-weight 0 --value-target score --augment-symmetries --ownership-loss-weight 0.5 --train-steps 512 --batch-size 128 --max-moves 400 --validation-games 40 --validation-interval 5 --validation-opponent random-agent --validation-max-moves 400 --target-win-rate 0.95 --seed 5 --metrics-path runs/go19_conv_tactical_continue/metrics.jsonl --report-dir runs/go19_conv_tactical_continue/report --checkpoint-dir runs/go19_conv_tactical_continue/checkpoints --best-checkpoint-dir runs/go19_conv_tactical_continue/best --run-name "Go 19x19 Conv Tactical Continue"
 ```
 
 Workstation Docker version:
@@ -114,27 +124,54 @@ sudo docker run --rm --ipc=host \
   python -m game_player.scripts.train_go \
     --board-size 19 \
     --komi 7.5 \
-    --hidden-size 256 \
-    --depth 2 \
-    --iterations 10 \
+    --model-type conv \
+    --channels 32 \
+    --blocks 3 \
+    --init-model runs/go19_conv_tactical_probe/checkpoints/iteration-0008 \
+    --iterations 20 \
     --self-play-games 2 \
-    --mcts-simulations 4 \
-    --train-steps 8 \
-    --batch-size 16 \
-    --max-moves 120 \
+    --mcts-simulations 1 \
+    --mcts-evaluator tactical \
+    --tactical-area-weight 0 \
+    --value-target score \
+    --augment-symmetries \
+    --ownership-loss-weight 0.5 \
+    --train-steps 512 \
+    --batch-size 128 \
+    --max-moves 400 \
     --validation-games 40 \
-    --validation-opponent random-weights \
-    --validation-max-moves 160 \
-    --target-win-rate 0.9 \
-    --metrics-path runs/go19_mlp/metrics.jsonl \
-    --report-dir runs/go19_mlp/report \
-    --checkpoint-dir runs/go19_mlp/checkpoints \
-    --best-checkpoint-dir runs/go19_mlp/best \
-    --run-name "Go 19x19 MLP AlphaZero"
+    --validation-interval 5 \
+    --validation-opponent random-agent \
+    --validation-max-moves 400 \
+    --target-win-rate 0.95 \
+    --seed 5 \
+    --metrics-path runs/go19_conv_tactical_continue/metrics.jsonl \
+    --report-dir runs/go19_conv_tactical_continue/report \
+    --checkpoint-dir runs/go19_conv_tactical_continue/checkpoints \
+    --best-checkpoint-dir runs/go19_conv_tactical_continue/best \
+    --run-name "Go 19x19 Conv Tactical Continue"
 ```
 
-On the workstation this recipe reached the target at iteration 6 and the best
-checkpoint scored 100/100 against the fixed random-weight validation baseline.
+Use `--validation-interval` to reduce validation cost on large boards while
+still validating the final iteration.
+
+Evaluate the current rules-only tactical teacher before distilling it:
+
+```powershell
+game-player-eval-tactical-go --board-size 19 --komi 7.5 --games 40 --max-moves 400 --tactical-area-weight 0
+```
+
+Verified workstation checkpoints:
+
+- 9x9 Conv tactical bootstrap:
+  `runs/go9_conv_tactical_99/best`, 97/100 seed-0 eval and 197/200 seed-11
+  eval against uniform random legal play.
+- 19x19 Conv atari tactical continuation:
+  `runs/go19_conv_tactical_atari_continue/best`, 99/100 seed-0 eval against
+  uniform random legal play with 49/50 as black and 50/50 as white.
+
+These are tactical-bootstrap agents. They use rules-derived search targets and
+score or ownership targets, not human game supervision.
 
 ## Research Anchors
 
@@ -153,6 +190,10 @@ checkpoint scored 100/100 against the fixed random-weight validation baseline.
 - KataGo and ELF OpenGo are important later references for making Go training
   compute-efficient, but they add complexity beyond this first scaffold:
   https://arxiv.org/abs/1902.10565
+
+See [docs/alphazero-muzero-literature.md](docs/alphazero-muzero-literature.md)
+for implementation-focused notes on AlphaGo Zero, AlphaZero, MuZero, Minigo,
+OpenSpiel, ELF OpenGo, and KataGo.
 
 ## Workstation Repro
 
