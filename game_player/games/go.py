@@ -97,6 +97,7 @@ class GoState:
     current_player: Player
     consecutive_passes: int
     position_history: tuple[Board, ...]
+    position_history_players: tuple[Player, ...] = ()
 
     @classmethod
     def new(cls, board_size: int = 19, komi: float = 7.5) -> "GoState":
@@ -109,6 +110,7 @@ class GoState:
             current_player=BLACK,
             consecutive_passes=0,
             position_history=(board,),
+            position_history_players=(EMPTY,),
         )
 
     @property
@@ -136,7 +138,7 @@ class GoState:
         if self.board[action] != EMPTY:
             return False
         next_board = self._next_board_for_play(action)
-        if next_board in self.position_history:
+        if self._player_has_left_position(self.current_player, next_board):
             return False
         return True
 
@@ -162,6 +164,9 @@ class GoState:
                 current_player=other_player(self.current_player),
                 consecutive_passes=self.consecutive_passes + 1,
                 position_history=self.position_history + (self.board,),
+                position_history_players=(
+                    self._history_players() + (self.current_player,)
+                ),
             )
 
         next_board = self._next_board_for_play(action)
@@ -172,6 +177,9 @@ class GoState:
             current_player=other_player(self.current_player),
             consecutive_passes=0,
             position_history=self.position_history + (next_board,),
+            position_history_players=(
+                self._history_players() + (self.current_player,)
+            ),
         )
 
     def _next_board_for_play(self, action: Action) -> Board:
@@ -196,8 +204,26 @@ class GoState:
         )
         assert own_group
         if not own_liberties:
-            return self.board
+            for point in own_group:
+                next_board[point] = EMPTY
+            return tuple(next_board)
         return board_after_captures
+
+    def _history_players(self) -> tuple[Player, ...]:
+        if self.position_history_players:
+            assert len(self.position_history_players) == len(self.position_history)
+            return self.position_history_players
+        return (EMPTY,) * len(self.position_history)
+
+    def _player_has_left_position(self, player: Player, board: Board) -> bool:
+        return any(
+            history_player == player and history_board == board
+            for history_board, history_player in zip(
+                self.position_history,
+                self._history_players(),
+                strict=True,
+            )
+        )
 
     def observation(self) -> list[float]:
         own = [
@@ -224,9 +250,9 @@ class GoState:
                 self.board_size,
             )
             visited.update(region)
-            if border_colors == {BLACK}:
+            if WHITE not in border_colors:
                 black_score += len(region)
-            elif border_colors == {WHITE}:
+            if BLACK not in border_colors:
                 white_score += len(region)
 
         return black_score, white_score

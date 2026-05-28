@@ -19,13 +19,14 @@ Black moves first. Players alternate turns. A turn is either:
 Orthogonally adjacent stones of the same color form a group. Empty
 orthogonally adjacent points are liberties.
 
-After a move, any opposing group with no liberties is removed. A move that
-leaves the mover's own group with no liberties after captures is illegal.
+After a move, any opposing group with no liberties is removed. Then any of the
+mover's own groups with no liberties are removed. This follows Tromp-Taylor and
+means suicide is legal.
 
 ## Repetition
 
-Moves that repeat a previous full-board position are illegal. This is a simple
-positional superko rule for automated play.
+Moves that leave a grid pattern identical to one that the mover has previously
+left are illegal. Passes also count as positions left by the passing player.
 
 ## End Of Game
 

@@ -12,8 +12,9 @@ def main() -> None:
     st.set_page_config(page_title="Game Player Go", layout="wide")
     st.title("Game Player Go")
 
-    board_size = st.sidebar.selectbox("Board", [9, 13, 19], index=0)
+    board_size = st.sidebar.selectbox("Board", [5, 9, 13, 19], index=1)
     agent_kind = st.sidebar.selectbox("Agent", ["Random", "Argmax MLP"], index=0)
+    model_path = st.sidebar.text_input("Model path or Hub repo", value="")
     if st.sidebar.button("New Game"):
         st.session_state.go_state = GoState.new(board_size=board_size)
 
@@ -26,7 +27,7 @@ def main() -> None:
         st.session_state.go_state = state
 
     st.caption(_status_text(state))
-    _draw_board(state, agent_kind)
+    _draw_board(state, agent_kind, model_path)
 
     black_score, white_score = st.session_state.go_state.area_scores()
     st.write(
@@ -38,7 +39,7 @@ def main() -> None:
     )
 
 
-def _draw_board(state: GoState, agent_kind: str) -> None:
+def _draw_board(state: GoState, agent_kind: str, model_path: str) -> None:
     legal_actions = set(state.legal_actions())
     for row in range(state.board_size):
         columns = st.columns(state.board_size, gap="small")
@@ -52,36 +53,45 @@ def _draw_board(state: GoState, agent_kind: str) -> None:
                 disabled=disabled,
                 use_container_width=True,
             ):
-                _play_human_action(action, agent_kind)
+                _play_human_action(action, agent_kind, model_path)
                 st.rerun()
 
     if st.button("Pass", disabled=state.is_terminal()):
-        _play_human_action(state.pass_action, agent_kind)
+        _play_human_action(state.pass_action, agent_kind, model_path)
         st.rerun()
 
 
-def _play_human_action(action: int, agent_kind: str) -> None:
+def _play_human_action(action: int, agent_kind: str, model_path: str) -> None:
     state = st.session_state.go_state
     if state.current_player != BLACK:
         return
 
     state = state.apply_action(action)
     if not state.is_terminal():
-        agent = _build_agent(agent_kind, state.board_size)
+        agent = _build_agent(agent_kind, state.board_size, model_path)
         agent_action = agent.select_action(state)
         state = state.apply_action(agent_action)
     st.session_state.go_state = state
 
 
-def _build_agent(agent_kind: str, board_size: int):
+def _build_agent(agent_kind: str, board_size: int, model_path: str):
     if agent_kind == "Random":
         return RandomAgent()
-    return _build_argmax_agent(board_size)
+    if model_path:
+        return _load_argmax_agent(model_path, board_size)
+    return _build_random_weight_argmax_agent(board_size)
 
 
 @st.cache_resource
-def _build_argmax_agent(board_size: int):
+def _build_random_weight_argmax_agent(board_size: int):
     model = MLPPolicyValueNet(board_size=board_size, hidden_size=128, depth=2)
+    return ArgmaxPolicyAgent(model)
+
+
+@st.cache_resource
+def _load_argmax_agent(model_path: str, board_size: int):
+    model = MLPPolicyValueNet.from_pretrained(model_path)
+    assert model.board_size == board_size
     return ArgmaxPolicyAgent(model)
 
 

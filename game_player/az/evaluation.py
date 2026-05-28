@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 
 import torch
@@ -7,6 +8,7 @@ import torch.nn.functional as F
 
 from game_player.agents.argmax_agent import ArgmaxPolicyAgent
 from game_player.agents.base import Agent
+from game_player.agents.random_agent import RandomAgent
 from game_player.games.base import Action, GameState, Player
 from game_player.games.go import BLACK, WHITE, GoState
 
@@ -26,6 +28,7 @@ class NeuralPolicyValueEvaluator:
         legal_actions = state.legal_actions()
         assert legal_actions
 
+        self.model.eval()
         with torch.no_grad():
             observation = torch.tensor(
                 state.observation(),
@@ -44,6 +47,81 @@ class NeuralPolicyValueEvaluator:
             for action, probability in zip(legal_actions, legal_probabilities, strict=True)
         }
         return priors, float(output.value[0].detach().cpu().item())
+
+
+class RandomRolloutEvaluator:
+    def __init__(
+        self,
+        rollouts: int = 1,
+        max_moves: int | None = None,
+        seed: int = 0,
+    ) -> None:
+        assert rollouts > 0
+        self.rollouts = rollouts
+        self.max_moves = max_moves
+        self.rng = random.Random(seed)
+
+    def __call__(self, state: GameState) -> tuple[dict[Action, float], float]:
+        legal_actions = state.legal_actions()
+        assert legal_actions
+        probability = 1.0 / len(legal_actions)
+        priors = {action: probability for action in legal_actions}
+        return priors, self.estimate_value(state)
+
+    def estimate_value(self, state: GameState) -> float:
+        total_value = 0.0
+        for _ in range(self.rollouts):
+            total_value += _random_rollout_result(
+                state=state,
+                max_moves=self.max_moves,
+                rng=self.rng,
+            )
+        return total_value / self.rollouts
+
+
+class HybridPolicyRolloutEvaluator:
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        rollouts: int = 1,
+        max_moves: int | None = None,
+        device: str = "cpu",
+        seed: int = 0,
+    ) -> None:
+        self.policy_evaluator = NeuralPolicyValueEvaluator(
+            model=model,
+            device=device,
+        )
+        self.rollout_evaluator = RandomRolloutEvaluator(
+            rollouts=rollouts,
+            max_moves=max_moves,
+            seed=seed,
+        )
+
+    def __call__(self, state: GameState) -> tuple[dict[Action, float], float]:
+        priors, _ = self.policy_evaluator(state)
+        return priors, self.rollout_evaluator.estimate_value(state)
+
+
+def _random_rollout_result(
+    state: GameState,
+    max_moves: int | None,
+    rng: random.Random,
+) -> float:
+    root_player = state.current_player
+    rollout_state = state
+    moves = 0
+
+    while not rollout_state.is_terminal():
+        if max_moves is not None and moves >= max_moves:
+            break
+        legal_actions = rollout_state.legal_actions()
+        assert legal_actions
+        action = rng.choice(legal_actions)
+        rollout_state = rollout_state.apply_action(action)
+        moves += 1
+
+    return rollout_state.result_for_player(root_player)
 
 
 @dataclass(frozen=True)
@@ -141,6 +219,54 @@ def evaluate_model_against_random_weights(
             result = play_match(
                 state=state,
                 black_agent=baseline_agent,
+                white_agent=candidate_agent,
+                max_moves=max_moves,
+            )
+            candidate_wins += int(result.winner == WHITE)
+
+    return {
+        "validation_games": float(games),
+        "validation_candidate_wins": float(candidate_wins),
+        "validation_candidate_win_rate": candidate_wins / games,
+        "validation_candidate_black_games": float(candidate_black_games),
+        "validation_candidate_white_games": float(candidate_white_games),
+    }
+
+
+def evaluate_model_against_random_agent(
+    candidate_model: torch.nn.Module,
+    board_size: int = 19,
+    komi: float = 7.5,
+    games: int = 100,
+    max_moves: int | None = None,
+    device: str = "cpu",
+    seed: int = 0,
+) -> dict[str, float]:
+    assert games > 0
+
+    candidate_agent = ArgmaxPolicyAgent(candidate_model, device=device)
+    random_agent = RandomAgent(seed=seed)
+    candidate_wins = 0
+    candidate_black_games = 0
+    candidate_white_games = 0
+
+    for game_idx in range(games):
+        state = GoState.new(board_size=board_size, komi=komi)
+        candidate_is_black = game_idx % 2 == 0
+        if candidate_is_black:
+            candidate_black_games += 1
+            result = play_match(
+                state=state,
+                black_agent=candidate_agent,
+                white_agent=random_agent,
+                max_moves=max_moves,
+            )
+            candidate_wins += int(result.winner == BLACK)
+        else:
+            candidate_white_games += 1
+            result = play_match(
+                state=state,
+                black_agent=random_agent,
                 white_agent=candidate_agent,
                 max_moves=max_moves,
             )

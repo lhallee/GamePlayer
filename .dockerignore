@@ -1,0 +1,9 @@
+.git
+.venv
+__pycache__
+*.pyc
+*.zip
+.pytest_cache
+runs
+*.egg-info
+streamlit-screenshot.png

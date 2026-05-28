@@ -1,1 +1,6 @@
+__pycache__/
 *.pyc
+*.zip
+.pytest_cache/
+runs/
+*.egg-info/

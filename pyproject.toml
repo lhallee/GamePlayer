@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "huggingface-hub>=0.23",
+    "matplotlib>=3.8",
     "streamlit>=1.33",
     "torch>=2.2",
     "transformers>=4.40",
@@ -21,6 +22,7 @@ dev = [
 ]
 
 [project.scripts]
+game-player-eval-go = "game_player.scripts.eval_go:main"
 game-player-train-go = "game_player.scripts.train_go:main"
 
 [tool.setuptools.packages.find]

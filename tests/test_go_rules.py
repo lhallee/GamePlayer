@@ -22,7 +22,44 @@ class GoRulesTest(unittest.TestCase):
         state = state.apply_action(point_to_action(2, 1, 3))
         self.assertEqual(state.board[center], EMPTY)
 
-    def test_suicide_is_illegal(self):
+    def test_captured_point_can_be_legal_again_when_it_has_a_liberty(self):
+        previous_board = (
+            EMPTY, BLACK, EMPTY,
+            BLACK, WHITE, WHITE,
+            EMPTY, BLACK, EMPTY,
+        )
+        current_board = (
+            EMPTY, BLACK, EMPTY,
+            BLACK, EMPTY, EMPTY,
+            EMPTY, BLACK, EMPTY,
+        )
+        state = GoState(
+            board_size=3,
+            komi=0.5,
+            board=current_board,
+            current_player=WHITE,
+            consecutive_passes=0,
+            position_history=(previous_board, current_board),
+        )
+        self.assertTrue(state.is_legal_action(point_to_action(1, 1, 3)))
+
+    def test_captured_point_can_be_replayed_as_tromp_taylor_suicide(self):
+        state = GoState.new(board_size=3, komi=0.5)
+        center = point_to_action(1, 1, 3)
+        state = state.apply_action(center)
+        state = state.apply_action(point_to_action(0, 1, 3))
+        state = state.apply_action(state.pass_action)
+        state = state.apply_action(point_to_action(1, 0, 3))
+        state = state.apply_action(state.pass_action)
+        state = state.apply_action(point_to_action(1, 2, 3))
+        state = state.apply_action(state.pass_action)
+        state = state.apply_action(point_to_action(2, 1, 3))
+        self.assertEqual(state.board[center], EMPTY)
+        self.assertTrue(state.is_legal_action(center))
+        replayed = state.apply_action(center)
+        self.assertEqual(replayed.board[center], EMPTY)
+
+    def test_suicide_is_legal_under_tromp_taylor(self):
         board = (
             EMPTY, WHITE, EMPTY,
             WHITE, EMPTY, WHITE,
@@ -36,7 +73,43 @@ class GoRulesTest(unittest.TestCase):
             consecutive_passes=0,
             position_history=(board,),
         )
+        self.assertTrue(state.is_legal_action(point_to_action(1, 1, 3)))
+        next_state = state.apply_action(point_to_action(1, 1, 3))
+        self.assertEqual(next_state.board, board)
+
+    def test_repeating_position_left_by_same_player_is_illegal(self):
+        board = (
+            EMPTY, WHITE, EMPTY,
+            WHITE, EMPTY, WHITE,
+            EMPTY, WHITE, EMPTY,
+        )
+        state = GoState(
+            board_size=3,
+            komi=0.5,
+            board=board,
+            current_player=BLACK,
+            consecutive_passes=0,
+            position_history=(board,),
+            position_history_players=(BLACK,),
+        )
         self.assertFalse(state.is_legal_action(point_to_action(1, 1, 3)))
+
+    def test_repeating_position_left_by_other_player_is_legal(self):
+        board = (
+            EMPTY, WHITE, EMPTY,
+            WHITE, EMPTY, WHITE,
+            EMPTY, WHITE, EMPTY,
+        )
+        state = GoState(
+            board_size=3,
+            komi=0.5,
+            board=board,
+            current_player=BLACK,
+            consecutive_passes=0,
+            position_history=(board,),
+            position_history_players=(WHITE,),
+        )
+        self.assertTrue(state.is_legal_action(point_to_action(1, 1, 3)))
 
     def test_two_passes_end_game(self):
         state = GoState.new(board_size=3, komi=0.5)
@@ -44,6 +117,7 @@ class GoRulesTest(unittest.TestCase):
         self.assertFalse(state.is_terminal())
         state = state.apply_action(state.pass_action)
         self.assertTrue(state.is_terminal())
+        self.assertEqual(state.area_scores(), (9.0, 9.5))
         self.assertEqual(state.winner(), WHITE)
 
     def test_observation_is_current_player_perspective(self):

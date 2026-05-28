@@ -24,9 +24,11 @@ def play_self_play_game(
     dirichlet_alpha: float | None = 0.03,
     exploration_fraction: float = 0.25,
     max_moves: int | None = None,
+    value_target: str = "outcome",
     rng: random.Random | None = None,
 ) -> tuple[list[SelfPlaySample], GameState]:
     assert simulations > 0
+    assert value_target in ("outcome", "score")
     if rng is None:
         rng = random.Random()
 
@@ -58,7 +60,7 @@ def play_self_play_game(
         SelfPlaySample(
             observation=observation,
             policy=policy,
-            value=state.result_for_player(player),
+            value=_final_value_for_player(state, player, value_target),
         )
         for observation, policy, player in trajectory
     ]
@@ -77,3 +79,21 @@ def sample_action(policy: list[float], rng: random.Random) -> Action:
         if cumulative >= threshold:
             return action
     return len(policy) - 1
+
+
+def _final_value_for_player(
+    state: GameState,
+    player: Player,
+    value_target: str,
+) -> float:
+    if value_target == "outcome":
+        return state.result_for_player(player)
+    if value_target == "score":
+        black_score, white_score = state.area_scores()
+        score_margin = black_score - white_score
+        if player < 0:
+            score_margin = -score_margin
+        board_area = state.action_size - 1
+        value = score_margin / board_area
+        return max(-1.0, min(1.0, value))
+    raise ValueError(f"Unknown value target: {value_target}")

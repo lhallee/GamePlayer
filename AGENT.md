@@ -32,8 +32,10 @@ The project should stay lightweight, Python-first, and easy to extend.
   - opponent stones channel
 - Primary policy output is board logits shaped `[board_size, board_size]`.
 - Go still needs an internal pass action for termination and scoring. Expose this explicitly in action helpers rather than hiding it in board logits.
-- Implement captures, suicide prevention, repeated-position prevention, consecutive-pass termination, and area scoring with komi.
-- Prefer simple area scoring for automation; document rule assumptions.
+- Implement Tromp-Taylor captures, legal suicide with own-stone emptying,
+  per-player repeated-position prevention, consecutive-pass termination, and
+  area scoring with komi.
+- Prefer Tromp-Taylor area scoring for automation; document rule assumptions.
 
 ## AlphaZero Notes
 
@@ -44,6 +46,10 @@ The project should stay lightweight, Python-first, and easy to extend.
 - Replay buffer should be FIFO and sample uniformly at this stage.
 - Validation should run match batches against fixed baselines, including a random or random-weight opponent.
 - Logs should be machine-readable JSONL where practical.
+- Training should support repeated self-play/train/evaluate iterations, not just
+  one-off smoke runs.
+- Training runs should produce JSONL metrics, PNG plots at 300 dpi, and a
+  Markdown report when a report directory is configured.
 
 ## Implementation Bias
 
@@ -56,6 +62,8 @@ The project should stay lightweight, Python-first, and easy to extend.
 - Keep APIs generic enough for future card games, but do not overbuild hidden-information support until needed.
 - Make scripts small and composable.
 - Keep heavy training commands documented but do not run intensive training inline.
+- Prefer checkpoint directories that are directly compatible with
+  `huggingface_hub.PyTorchModelHubMixin`.
 
 ## Research Anchors
 
